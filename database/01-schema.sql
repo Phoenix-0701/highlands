@@ -1,0 +1,244 @@
+IF DB_ID(N'HighlandsCoffeeDB') IS NULL
+    EXEC(N'CREATE DATABASE HighlandsCoffeeDB');
+GO
+USE HighlandsCoffeeDB;
+GO
+
+-- 1. Bảng DANH_MUC
+IF OBJECT_ID(N'dbo.SAN_PHAM') IS NOT NULL
+    THROW 51000, N'CSDL đã có bảng. Không chạy lại schema trên dữ liệu hiện có.', 1;
+GO
+CREATE TABLE DANH_MUC (
+    Ma_danh_muc VARCHAR(20) PRIMARY KEY,
+    Ten_danh_muc NVARCHAR(100) NOT NULL UNIQUE,
+    Mo_ta NVARCHAR(500) NULL
+);
+
+-- 2. Bảng KICH_THUOC
+CREATE TABLE KICH_THUOC (
+    Ma_size VARCHAR(10) PRIMARY KEY,
+    Ten_size NVARCHAR(50) NOT NULL UNIQUE,
+    CONSTRAINT CHK_KichThuoc_MaSize CHECK (Ma_size IN ('XS', 'S', 'M', 'L', 'XL'))
+);
+
+-- 3. Bảng SAN_PHAM (Thực thể cha - Superclass)
+CREATE TABLE SAN_PHAM (
+    Ma_SP VARCHAR(20) PRIMARY KEY,
+    Ten_SP NVARCHAR(150) NOT NULL UNIQUE,
+    Loai_SP VARCHAR(20) NOT NULL,
+    CONSTRAINT UQ_SP_Loai UNIQUE (Ma_SP, Loai_SP),
+    Mo_ta NVARCHAR(500) NULL,
+    Trang_thai NVARCHAR(50) NOT NULL DEFAULT N'Đang bán',
+    CONSTRAINT CHK_SP_Ma CHECK (Ma_SP LIKE 'SP[0-9][0-9]%' AND SUBSTRING(Ma_SP,3,20) NOT LIKE '%[^0-9]%'),
+    CONSTRAINT CHK_SP_Ten CHECK (LEN(LTRIM(RTRIM(Ten_SP))) >= 3),
+    CONSTRAINT CHK_SanPham_LoaiSP CHECK (Loai_SP IN ('MON_NUOC', 'BANH_NGOT')),
+    CONSTRAINT CHK_SanPham_TrangThai CHECK (Trang_thai IN (N'Đang bán', N'Hết hàng', N'Ngừng kinh doanh'))
+);
+
+-- 4. Bảng SAN_PHAM_THUOC_DANH_MUC (Liên kết M:N)
+CREATE TABLE SAN_PHAM_THUOC_DANH_MUC (
+    Ma_SP VARCHAR(20) NOT NULL,
+    Ma_danh_muc VARCHAR(20) NOT NULL,
+    PRIMARY KEY (Ma_SP, Ma_danh_muc),
+    CONSTRAINT FK_SPTDM_SanPham FOREIGN KEY (Ma_SP) REFERENCES SAN_PHAM(Ma_SP) ON DELETE CASCADE,
+    CONSTRAINT FK_SPTDM_DanhMuc FOREIGN KEY (Ma_danh_muc) REFERENCES DANH_MUC(Ma_danh_muc) ON DELETE CASCADE
+);
+
+-- 5. Bảng BANH_NGOT (Thực thể con - Subclass)
+CREATE TABLE BANH_NGOT (
+    Ma_SP VARCHAR(20) PRIMARY KEY,
+    Don_gia DECIMAL(12, 2) NOT NULL,
+    Loai_SP VARCHAR(20) NOT NULL DEFAULT 'BANH_NGOT' CHECK (Loai_SP = 'BANH_NGOT'),
+    CONSTRAINT FK_BANH_NGOT_PhanLoai FOREIGN KEY (Ma_SP, Loai_SP) REFERENCES SAN_PHAM(Ma_SP, Loai_SP) ON DELETE CASCADE,
+    CONSTRAINT CHK_BanhNgot_DonGia CHECK (Don_gia >= 5000)
+);
+
+-- 6. Bảng MON_NUOC (Thực thể con - Subclass)
+CREATE TABLE MON_NUOC (
+    Ma_SP VARCHAR(20) PRIMARY KEY,
+    Loai_SP VARCHAR(20) NOT NULL DEFAULT 'MON_NUOC' CHECK (Loai_SP = 'MON_NUOC'),
+    CONSTRAINT FK_MON_NUOC_PhanLoai FOREIGN KEY (Ma_SP, Loai_SP) REFERENCES SAN_PHAM(Ma_SP, Loai_SP) ON DELETE CASCADE
+);
+
+-- 7. Bảng CHON_SIZE (Giá bán theo kích thước của MON_NUOC)
+CREATE TABLE CHON_SIZE (
+    Ma_SP VARCHAR(20) NOT NULL,
+    Ma_size VARCHAR(10) NOT NULL,
+    Gia_ban DECIMAL(12, 2) NOT NULL,
+    PRIMARY KEY (Ma_SP, Ma_size),
+    CONSTRAINT FK_ChonSize_MonNuoc FOREIGN KEY (Ma_SP) REFERENCES MON_NUOC(Ma_SP) ON DELETE CASCADE,
+    CONSTRAINT FK_ChonSize_KichThuoc FOREIGN KEY (Ma_size) REFERENCES KICH_THUOC(Ma_size),
+    CONSTRAINT CHK_ChonSize_GiaBan CHECK (Gia_ban >= 5000)
+);
+
+-- 8. Bảng TOPPING
+CREATE TABLE TOPPING (
+    Ma_topping VARCHAR(20) PRIMARY KEY,
+    Ten_topping NVARCHAR(100) NOT NULL UNIQUE,
+    Don_gia DECIMAL(12, 2) NOT NULL,
+    CONSTRAINT CHK_Topping_DonGia CHECK (Don_gia > 0)
+);
+
+-- 9. Bảng CHI_NHANH
+CREATE TABLE CHI_NHANH (
+    Ma_CN VARCHAR(20) PRIMARY KEY,
+    Ten_CN NVARCHAR(150) NOT NULL UNIQUE,
+    Dia_chi NVARCHAR(300) NOT NULL,
+    Trang_thai NVARCHAR(50) NOT NULL DEFAULT N'Mở cửa',
+    CONSTRAINT CHK_ChiNhanh_TrangThai CHECK (Trang_thai IN (N'Mở cửa', N'Đóng cửa', N'Bảo trì'))
+);
+
+-- 10. Bảng SDT_CN (Thuộc tính đa trị SDT của Chi nhánh)
+CREATE TABLE SDT_CN (
+    Ma_CN VARCHAR(20) NOT NULL,
+    SDT VARCHAR(15) NOT NULL,
+    PRIMARY KEY (Ma_CN, SDT),
+    CONSTRAINT FK_SDTCN_ChiNhanh FOREIGN KEY (Ma_CN) REFERENCES CHI_NHANH(Ma_CN) ON DELETE CASCADE,
+    CONSTRAINT CHK_SDTCN_Format CHECK (SDT NOT LIKE '%[^0-9]%' AND LEN(SDT) BETWEEN 10 AND 11)
+);
+
+-- 11. Bảng PTTT (Phương thức thanh toán)
+CREATE TABLE PTTT (
+    Ma_PT VARCHAR(20) PRIMARY KEY,
+    Ten_PT NVARCHAR(100) NOT NULL UNIQUE
+);
+
+-- 12. Bảng KHACH_HANG (Ràng buộc 1.3.b: SDT, Email là UNIQUE; không lưu mật khẩu)
+CREATE TABLE KHACH_HANG (
+    Ma_KH VARCHAR(20) PRIMARY KEY,
+    Ho NVARCHAR(50) NOT NULL,
+    Ten NVARCHAR(50) NOT NULL,
+    SDT VARCHAR(15) NOT NULL UNIQUE,
+    Email VARCHAR(100) NOT NULL UNIQUE,
+    Ngay_tao DATETIME NOT NULL DEFAULT GETDATE(),
+    Diem_tich_luy INT NOT NULL DEFAULT 0, -- Thuộc tính dẫn xuất
+    Hang_thanh_vien VARCHAR(20) NOT NULL DEFAULT 'MEMBER',
+    CONSTRAINT CHK_KhachHang_SDT CHECK (SDT LIKE '0[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'),
+    CONSTRAINT CHK_KhachHang_Email CHECK (Email LIKE '%_@__%.__%'),
+    CONSTRAINT CHK_KhachHang_Diem CHECK (Diem_tich_luy >= 0),
+    CONSTRAINT CHK_KhachHang_Hang CHECK (Hang_thanh_vien IN ('MEMBER', 'SILVER', 'GOLD', 'DIAMOND'))
+);
+
+-- 13. Bảng VOUCHER
+CREATE TABLE VOUCHER (
+    Ma_Voucher VARCHAR(20) PRIMARY KEY,
+    Ten_Voucher NVARCHAR(150) NOT NULL,
+    Diem_doi INT NOT NULL,
+    Phan_tram_giam DECIMAL(5, 2) NOT NULL,
+    Giam_toi_da DECIMAL(12, 2) NOT NULL,
+    Dieu_kien DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    Tgian_hieu_luc INT NOT NULL,
+    CONSTRAINT CHK_Voucher_DiemDoi CHECK (Diem_doi > 0),
+    CONSTRAINT CHK_Voucher_PhanTram CHECK (Phan_tram_giam > 0 AND Phan_tram_giam <= 100),
+    CONSTRAINT CHK_Voucher_GiamToiDa CHECK (Giam_toi_da > 0),
+    CONSTRAINT CHK_Voucher_DieuKien CHECK (Dieu_kien >= 0),
+    CONSTRAINT CHK_Voucher_HieuLuc CHECK (Tgian_hieu_luc > 0)
+);
+
+-- 14. Bảng VOUCHER_CA_NHAN
+CREATE TABLE VOUCHER_CA_NHAN (
+    Ma_VCCN VARCHAR(20) PRIMARY KEY,
+    Ngay_doi DATETIME NOT NULL DEFAULT GETDATE(),
+    HSD DATETIME NOT NULL,
+    Trang_thai VARCHAR(30) NOT NULL DEFAULT 'CHUA_SU_DUNG',
+    Ma_Voucher VARCHAR(20) NOT NULL,
+    Ma_KH VARCHAR(20) NOT NULL,
+    CONSTRAINT UQ_VCCN_KhachHang UNIQUE (Ma_VCCN, Ma_KH),
+    CONSTRAINT FK_VCCN_Voucher FOREIGN KEY (Ma_Voucher) REFERENCES VOUCHER(Ma_Voucher),
+    CONSTRAINT FK_VCCN_KhachHang FOREIGN KEY (Ma_KH) REFERENCES KHACH_HANG(Ma_KH),
+    CONSTRAINT CHK_VCCN_HSD CHECK (HSD > Ngay_doi),
+    CONSTRAINT CHK_VCCN_TrangThai CHECK (Trang_thai IN ('CHUA_SU_DUNG', 'DA_SU_DUNG', 'HET_HAN'))
+);
+
+-- 15. Bảng HOA_DON (Ràng buộc 1.3.d, 1.3.e)
+CREATE TABLE HOA_DON (
+    Ma_HD VARCHAR(20) PRIMARY KEY,
+    Ngay_tao DATETIME NOT NULL DEFAULT GETDATE(),
+    Tong_tien DECIMAL(12, 2) NOT NULL DEFAULT 0,      -- Thuộc tính dẫn xuất
+    So_tien_giam DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    Thanh_tien DECIMAL(12, 2) NOT NULL DEFAULT 0,     -- Thuộc tính dẫn xuất
+    Diem_tich_luy_nhan INT NOT NULL DEFAULT 0,        -- Thuộc tính dẫn xuất
+    Trang_thai VARCHAR(30) NOT NULL DEFAULT 'CHO_POS_XAC_NHAN',
+    Ma_CN VARCHAR(20) NOT NULL,
+    Ma_PT VARCHAR(20) NOT NULL,
+    Ma_KH VARCHAR(20) NOT NULL,
+    Ma_VCCN VARCHAR(20) NULL,
+    CONSTRAINT UQ_HoaDon_KhachHang UNIQUE (Ma_HD, Ma_KH),
+    CONSTRAINT FK_HoaDon_ChiNhanh FOREIGN KEY (Ma_CN) REFERENCES CHI_NHANH(Ma_CN),
+    CONSTRAINT FK_HoaDon_PTTT FOREIGN KEY (Ma_PT) REFERENCES PTTT(Ma_PT),
+    CONSTRAINT FK_HoaDon_KhachHang FOREIGN KEY (Ma_KH) REFERENCES KHACH_HANG(Ma_KH),
+    -- Ràng buộc 1.3.e: Khách hàng đặt đơn phải chính là chủ sở hữu Ma_VCCN
+    CONSTRAINT FK_HoaDon_VCCN_SoHuu FOREIGN KEY (Ma_VCCN, Ma_KH) REFERENCES VOUCHER_CA_NHAN(Ma_VCCN, Ma_KH),
+    CONSTRAINT CHK_HoaDon_Tien CHECK (Tong_tien >= 0 AND So_tien_giam >= 0 AND Thanh_tien >= 0),
+    CONSTRAINT CHK_HoaDon_Diem CHECK (Diem_tich_luy_nhan >= 0),
+    CONSTRAINT CHK_HoaDon_TrangThai CHECK (Trang_thai IN ('CHO_POS_XAC_NHAN', 'DANG_CHUAN_BI', 'HOAN_TAT', 'DA_HUY'))
+);
+
+CREATE UNIQUE NONCLUSTERED INDEX UQ_HoaDon_MaVCCN_NotNull
+ON HOA_DON(Ma_VCCN) WHERE Ma_VCCN IS NOT NULL;
+
+-- 16. Bảng CHI_TIET_HOA_DON (Thực thể yếu - Ràng buộc 1.3.a, 1.3.c)
+CREATE TABLE CHI_TIET_HOA_DON (
+    Ma_HD VARCHAR(20) NOT NULL,
+    Ma_chi_tiet INT NOT NULL,
+    Ma_SP VARCHAR(20) NOT NULL,
+    Ma_size VARCHAR(10) NULL,
+    Dang_mon NVARCHAR(20) NULL,
+    So_luong INT NOT NULL,
+    Don_gia DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    Thanh_tien DECIMAL(12, 2) NOT NULL DEFAULT 0, -- Thuộc tính dẫn xuất
+    Ghi_chu NVARCHAR(255) NULL,
+    PRIMARY KEY (Ma_HD, Ma_chi_tiet),
+    CONSTRAINT FK_CTHD_HoaDon FOREIGN KEY (Ma_HD) REFERENCES HOA_DON(Ma_HD) ON DELETE CASCADE,
+    CONSTRAINT FK_CTHD_SanPham FOREIGN KEY (Ma_SP) REFERENCES SAN_PHAM(Ma_SP),
+    CONSTRAINT FK_CTHD_ChonSize FOREIGN KEY (Ma_SP, Ma_size) REFERENCES CHON_SIZE(Ma_SP, Ma_size),
+    CONSTRAINT CHK_CTHD_SoLuong CHECK (So_luong > 0),
+    CONSTRAINT CHK_CTHD_DonGia CHECK (Don_gia >= 0 AND Thanh_tien >= 0),
+    CONSTRAINT CHK_CTHD_DangMon CHECK (Dang_mon IN (N'Đá', N'Nóng') OR Dang_mon IS NULL),
+    CONSTRAINT CHK_CTHD_SizeVaDangMon CHECK (
+        (Ma_size IS NULL AND Dang_mon IS NULL) OR 
+        (Ma_size IS NOT NULL AND Dang_mon IS NOT NULL)
+    )
+);
+
+-- 17. Bảng CHON_TOPPING
+CREATE TABLE CHON_TOPPING (
+    Ma_HD VARCHAR(20) NOT NULL,
+    Ma_chi_tiet INT NOT NULL,
+    Ma_topping VARCHAR(20) NOT NULL,
+    Don_gia DECIMAL(12, 2) NOT NULL,
+    So_luong INT NOT NULL DEFAULT 1,
+    PRIMARY KEY (Ma_HD, Ma_chi_tiet, Ma_topping),
+    CONSTRAINT FK_ChonTopping_CTHD FOREIGN KEY (Ma_HD, Ma_chi_tiet) REFERENCES CHI_TIET_HOA_DON(Ma_HD, Ma_chi_tiet) ON DELETE CASCADE,
+    CONSTRAINT FK_ChonTopping_Topping FOREIGN KEY (Ma_topping) REFERENCES TOPPING(Ma_topping),
+    CONSTRAINT CHK_ChonTopping_SoLuong CHECK (So_luong > 0),
+    CONSTRAINT CHK_ChonTopping_DonGia CHECK (Don_gia > 0)
+);
+
+-- 18. Bảng LICH_SU_DIEM (Ràng buộc 1.3.i)
+CREATE TABLE LICH_SU_DIEM (
+    Ma_LS VARCHAR(50) PRIMARY KEY,
+    Diem_thay_doi INT NOT NULL,
+    Thoi_gian DATETIME NOT NULL DEFAULT GETDATE(),
+    Noi_dung NVARCHAR(255) NOT NULL,
+    Ma_KH VARCHAR(20) NOT NULL,
+    Ma_HD VARCHAR(20) NULL,
+    Ma_VCCN VARCHAR(20) NULL,
+    CONSTRAINT FK_LSD_KhachHang FOREIGN KEY (Ma_KH) REFERENCES KHACH_HANG(Ma_KH),
+    CONSTRAINT FK_LSD_HoaDon FOREIGN KEY (Ma_HD, Ma_KH) REFERENCES HOA_DON(Ma_HD, Ma_KH),
+    CONSTRAINT FK_LSD_VCCN FOREIGN KEY (Ma_VCCN, Ma_KH) REFERENCES VOUCHER_CA_NHAN(Ma_VCCN, Ma_KH),
+    CONSTRAINT CHK_LSD_LoaiTru_XOR CHECK (
+        (Ma_HD IS NOT NULL AND Ma_VCCN IS NULL AND Diem_thay_doi > 0) OR
+        (Ma_HD IS NULL AND Ma_VCCN IS NOT NULL AND Diem_thay_doi < 0)
+    )
+);
+
+CREATE UNIQUE NONCLUSTERED INDEX UQ_LSD_MaHD_NotNull ON LICH_SU_DIEM(Ma_HD) WHERE Ma_HD IS NOT NULL;
+CREATE UNIQUE NONCLUSTERED INDEX UQ_LSD_MaVCCN_NotNull ON LICH_SU_DIEM(Ma_VCCN) WHERE Ma_VCCN IS NOT NULL;
+GO
+
+-- Indexes for joins and reporting.
+CREATE INDEX IX_CTHD_SanPham ON dbo.CHI_TIET_HOA_DON(Ma_SP) INCLUDE(Ma_HD,So_luong,Thanh_tien);
+CREATE INDEX IX_HD_NgayTrangThai ON dbo.HOA_DON(Trang_thai,Ngay_tao) INCLUDE(Ma_CN,Ma_KH);
+CREATE INDEX IX_LSD_Khach ON dbo.LICH_SU_DIEM(Ma_KH) INCLUDE(Diem_thay_doi);
+GO

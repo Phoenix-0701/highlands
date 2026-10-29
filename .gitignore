@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+node_modules/
+**/node_modules/
+**/.next/
+**/dist/
+**/coverage/
+**/*.tsbuildinfo
+docs/sources/
+tools/package-lock.json
+tools/package.json
+tools/scriptdom/
+tmp/
+*.log

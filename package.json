@@ -1,0 +1,17 @@
+{
+  "name": "highlands-btl2",
+  "private": true,
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "db:up": "node scripts/docker.mjs compose up -d --wait sqlserver",
+    "db:down": "node scripts/docker.mjs compose down",
+    "db:init": "node scripts/database.mjs init",
+    "db:update": "node scripts/database.mjs update",
+    "db:check": "node scripts/database.mjs check",
+    "test:integration": "node scripts/check-integration.mjs",
+    "dev": "node scripts/dev.mjs",
+    "build": "npm --prefix highlands-server run build && npm --prefix highlands-client run build",
+    "test": "npm --prefix highlands-server test -- --runInBand"
+  },
+  "engines": { "node": ">=24" }
+}
