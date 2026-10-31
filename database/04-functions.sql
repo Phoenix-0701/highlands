@@ -1,127 +1,75 @@
+SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 USE HighlandsCoffeeDB;
-GO
--- HÀM 1: Tính điểm thưởng Chuỗi lửa tích điểm (Streak Bonus Drips)
-CREATE OR ALTER FUNCTION fn_TinhDiemThuongChuoiLua
-(
-    @Ma_KH VARCHAR(20),
-    @Tu_ngay DATE,
-    @Den_ngay DATE
-)
-RETURNS NVARCHAR(500)
-AS
+DELIMITER $$
+DROP FUNCTION IF EXISTS fn_TinhDiemThuongChuoiLua$$
+CREATE FUNCTION fn_TinhDiemThuongChuoiLua(p_customer VARCHAR(20),p_from DATE,p_to DATE)
+RETURNS VARCHAR(500) CHARACTER SET utf8mb4
+NOT DETERMINISTIC READS SQL DATA SQL SECURITY DEFINER
 BEGIN
-    IF @Ma_KH IS NULL OR LTRIM(RTRIM(@Ma_KH)) = ''
-        RETURN N'Lỗi tham số: Mã khách hàng không được để trống!';
-    IF NOT EXISTS (SELECT 1 FROM KHACH_HANG WHERE Ma_KH = @Ma_KH)
-        RETURN N'Lỗi tham số: Mã khách hàng "' + @Ma_KH + N'" không tồn tại trong hệ thống!';
-    IF @Tu_ngay IS NULL OR @Den_ngay IS NULL OR @Tu_ngay > @Den_ngay
-        RETURN N'Lỗi tham số: Khoảng thời gian (@Tu_ngay, @Den_ngay) không hợp lệ!';
-
-    DECLARE @NgayGiaoDich DATE, @TongChiTieuNgay DECIMAL(12, 2);
-    DECLARE @NgayTruoc DATE = NULL, @ChuoiHienTai INT = 0, @ChuoiDaiNhat INT = 0, @TongDiemBonus INT = 0;
-
-    DECLARE cur_LichSuMua CURSOR LOCAL FAST_FORWARD FOR
-        SELECT CAST(Ngay_tao AS DATE) AS NgayGD, SUM(Thanh_tien) AS TongChiNgay
-        FROM HOA_DON
-        WHERE Ma_KH = @Ma_KH AND Trang_thai = 'HOAN_TAT'
-          AND CAST(Ngay_tao AS DATE) BETWEEN @Tu_ngay AND @Den_ngay
-        GROUP BY CAST(Ngay_tao AS DATE)
-        ORDER BY NgayGD ASC;
-
-    OPEN cur_LichSuMua;
-    FETCH NEXT FROM cur_LichSuMua INTO @NgayGiaoDich, @TongChiTieuNgay;
-
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        IF @TongChiTieuNgay >= 50000
-        BEGIN
-            IF @NgayTruoc IS NOT NULL AND DATEDIFF(DAY, @NgayTruoc, @NgayGiaoDich) = 1
-                SET @ChuoiHienTai = @ChuoiHienTai + 1;
-            ELSE
-                SET @ChuoiHienTai = 1;
-
-            IF @ChuoiHienTai = 1 SET @TongDiemBonus = @TongDiemBonus + 2;
-            ELSE IF @ChuoiHienTai = 2 SET @TongDiemBonus = @TongDiemBonus + 4;
-            ELSE SET @TongDiemBonus = @TongDiemBonus + 8;
-
-            IF @ChuoiHienTai > @ChuoiDaiNhat SET @ChuoiDaiNhat = @ChuoiHienTai;
-            SET @NgayTruoc = @NgayGiaoDich;
-        END
-        ELSE
-        BEGIN
-            SET @ChuoiHienTai = 0;
-            SET @NgayTruoc = NULL;
-        END
-        FETCH NEXT FROM cur_LichSuMua INTO @NgayGiaoDich, @TongChiTieuNgay;
-    END
-
-    CLOSE cur_LichSuMua;
-    DEALLOCATE cur_LichSuMua;
-
-    RETURN N'Khách hàng ' + @Ma_KH + N' | Chuỗi lửa dài nhất: ' + CAST(@ChuoiDaiNhat AS NVARCHAR(10)) 
-         + N' ngày liên tiếp | Điểm thưởng Chuỗi lửa nhận thêm: +' + CAST(@TongDiemBonus AS NVARCHAR(10)) + N' Drips';
-END;
-GO
-
--- HÀM 2: Phân tích ngân sách trợ giá Voucher và hiệu quả doanh thu tại Chi nhánh
-CREATE OR ALTER FUNCTION fn_PhanTichGiaTriUuDaiChiNhanh
-(
-    @Ma_CN VARCHAR(20),
-    @Thang INT,
-    @Nam INT
-)
-RETURNS NVARCHAR(500)
-AS
+ DECLARE v_done BOOLEAN DEFAULT FALSE;
+ DECLARE v_day DATE;
+ DECLARE v_previous DATE DEFAULT NULL;
+ DECLARE v_total DECIMAL(19,2);
+ DECLARE v_streak INT DEFAULT 0;
+ DECLARE v_longest INT DEFAULT 0;
+ DECLARE v_bonus INT DEFAULT 0;
+ DECLARE cur_days CURSOR FOR SELECT DATE(Ngay_tao),SUM(Thanh_tien) FROM HOA_DON
+  WHERE Ma_KH=p_customer AND Trang_thai='HOAN_TAT' AND Ngay_tao>=p_from AND Ngay_tao<DATE_ADD(p_to,INTERVAL 1 DAY)
+  GROUP BY DATE(Ngay_tao) ORDER BY DATE(Ngay_tao);
+ DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_done=TRUE;
+ IF p_customer IS NULL OR NOT EXISTS(SELECT 1 FROM KHACH_HANG WHERE Ma_KH=p_customer) THEN RETURN 'Lỗi tham số: Khách hàng không tồn tại.'; END IF;
+ IF p_from IS NULL OR p_to IS NULL OR p_from>p_to THEN RETURN 'Lỗi tham số: Khoảng thời gian không hợp lệ.'; END IF;
+ OPEN cur_days;
+ read_days: LOOP
+  FETCH cur_days INTO v_day,v_total;
+  IF v_done THEN LEAVE read_days; END IF;
+  IF v_total>=50000 THEN
+   IF v_previous IS NOT NULL AND DATEDIFF(v_day,v_previous)=1 THEN SET v_streak=v_streak+1;
+   ELSE SET v_streak=1; END IF;
+   IF v_streak=1 THEN SET v_bonus=v_bonus+2;
+   ELSEIF v_streak=2 THEN SET v_bonus=v_bonus+4;
+   ELSE SET v_bonus=v_bonus+8; END IF;
+   SET v_longest=GREATEST(v_longest,v_streak);
+   SET v_previous=v_day;
+  ELSE SET v_streak=0; SET v_previous=NULL;
+  END IF;
+ END LOOP;
+ CLOSE cur_days;
+ RETURN CONCAT('Khách hàng ',p_customer,' | Chuỗi lửa dài nhất: ',v_longest,' ngày liên tiếp | Điểm thưởng Chuỗi lửa nhận thêm: +',v_bonus,' Drips');
+END$$
+DROP FUNCTION IF EXISTS fn_PhanTichGiaTriUuDaiChiNhanh$$
+CREATE FUNCTION fn_PhanTichGiaTriUuDaiChiNhanh(p_branch VARCHAR(20),p_month INT,p_year INT)
+RETURNS VARCHAR(500) CHARACTER SET utf8mb4
+NOT DETERMINISTIC READS SQL DATA SQL SECURITY DEFINER
 BEGIN
-    IF @Ma_CN IS NULL OR NOT EXISTS (SELECT 1 FROM CHI_NHANH WHERE Ma_CN = @Ma_CN)
-        RETURN N'Lỗi tham số: Mã chi nhánh không hợp lệ hoặc không tồn tại!';
-    IF @Thang IS NULL OR @Thang NOT BETWEEN 1 AND 12
-        RETURN N'Lỗi tham số: Tháng phải nằm trong khoảng từ 1 đến 12!';
-    IF @Nam IS NULL OR @Nam < 2020 OR @Nam > 2100
-        RETURN N'Lỗi tham số: Năm thống kê không hợp lệ!';
-
-    DECLARE @Ma_HD VARCHAR(20), @Tong_tien DECIMAL(12, 2), @So_tien_giam DECIMAL(12, 2), @Thanh_tien DECIMAL(12, 2);
-    DECLARE @SoDonCoVoucher INT = 0, @SoDonKhongVoucher INT = 0;
-    DECLARE @TongDoanhThuThuc DECIMAL(19, 2) = 0, @TongTienTroGia DECIMAL(19, 2) = 0;
-
-    DECLARE cur_HoaDonCN CURSOR LOCAL FAST_FORWARD FOR
-        SELECT Ma_HD, Tong_tien, So_tien_giam, Thanh_tien
-        FROM HOA_DON
-        WHERE Ma_CN = @Ma_CN AND Trang_thai = 'HOAN_TAT'
-          AND MONTH(Ngay_tao) = @Thang AND YEAR(Ngay_tao) = @Nam;
-
-    OPEN cur_HoaDonCN;
-    FETCH NEXT FROM cur_HoaDonCN INTO @Ma_HD, @Tong_tien, @So_tien_giam, @Thanh_tien;
-
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        SET @TongDoanhThuThuc = @TongDoanhThuThuc + @Thanh_tien;
-        SET @TongTienTroGia = @TongTienTroGia + @So_tien_giam;
-
-        IF @So_tien_giam > 0 SET @SoDonCoVoucher = @SoDonCoVoucher + 1;
-        ELSE SET @SoDonKhongVoucher = @SoDonKhongVoucher + 1;
-
-        FETCH NEXT FROM cur_HoaDonCN INTO @Ma_HD, @Tong_tien, @So_tien_giam, @Thanh_tien;
-    END
-
-    CLOSE cur_HoaDonCN;
-    DEALLOCATE cur_HoaDonCN;
-
-    IF (@SoDonCoVoucher + @SoDonKhongVoucher) = 0
-        RETURN N'Chi nhánh ' + @Ma_CN + N' không phát sinh hóa đơn hoàn tất nào trong tháng ' + CAST(@Thang AS NVARCHAR(2)) + N'/' + CAST(@Nam AS NVARCHAR(4)) + N'.';
-
-    DECLARE @DanhGia NVARCHAR(100);
-    IF @TongTienTroGia > (@TongDoanhThuThuc * 0.25)
-        SET @DanhGia = N'Mức độ trợ giá CAO (>25% doanh thu thực)';
-    ELSE IF @TongTienTroGia > 0
-        SET @DanhGia = N'Mức độ trợ giá HỢP LÝ (<=25% doanh thu thực)';
-    ELSE
-        SET @DanhGia = N'Không tốn ngân sách trợ giá';
-
-    RETURN N'CN ' + @Ma_CN + N' (' + CAST(@Thang AS NVARCHAR(2)) + N'/' + CAST(@Nam AS NVARCHAR(4)) + N'): '
-         + N'Đơn có Voucher = ' + CAST(@SoDonCoVoucher AS NVARCHAR(10))
-         + N', Đơn thường = ' + CAST(@SoDonKhongVoucher AS NVARCHAR(10))
-         + N' | Doanh thu thực = ' + CONVERT(NVARCHAR(40),CAST(@TongDoanhThuThuc AS DECIMAL(18,0))) + N'đ'
-         + N' | Trợ giá = ' + CONVERT(NVARCHAR(40),CAST(@TongTienTroGia AS DECIMAL(18,0))) + N'đ (' + @DanhGia + N')';
-END;
-GO
+ DECLARE v_done BOOLEAN DEFAULT FALSE;
+ DECLARE v_net DECIMAL(12,2);
+ DECLARE v_discount DECIMAL(12,2);
+ DECLARE v_total_net DECIMAL(19,2) DEFAULT 0;
+ DECLARE v_total_discount DECIMAL(19,2) DEFAULT 0;
+ DECLARE v_with INT DEFAULT 0;
+ DECLARE v_without INT DEFAULT 0;
+ DECLARE v_label VARCHAR(100);
+ DECLARE cur_orders CURSOR FOR SELECT Thanh_tien,So_tien_giam FROM HOA_DON
+  WHERE Ma_CN=p_branch AND Trang_thai='HOAN_TAT' AND MONTH(Ngay_tao)=p_month AND YEAR(Ngay_tao)=p_year;
+ DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_done=TRUE;
+ IF p_branch IS NULL OR NOT EXISTS(SELECT 1 FROM CHI_NHANH WHERE Ma_CN=p_branch) THEN RETURN 'Lỗi tham số: Chi nhánh không tồn tại.'; END IF;
+ IF p_month IS NULL OR p_month NOT BETWEEN 1 AND 12 THEN RETURN 'Lỗi tham số: Tháng phải từ 1 đến 12.'; END IF;
+ IF p_year IS NULL OR p_year NOT BETWEEN 2020 AND 2100 THEN RETURN 'Lỗi tham số: Năm phải từ 2020 đến 2100.'; END IF;
+ OPEN cur_orders;
+ read_orders: LOOP
+  FETCH cur_orders INTO v_net,v_discount;
+  IF v_done THEN LEAVE read_orders; END IF;
+  SET v_total_net=v_total_net+v_net;
+  SET v_total_discount=v_total_discount+v_discount;
+  IF v_discount>0 THEN SET v_with=v_with+1; ELSE SET v_without=v_without+1; END IF;
+ END LOOP;
+ CLOSE cur_orders;
+ IF v_with+v_without=0 THEN RETURN CONCAT('Chi nhánh ',p_branch,' không phát sinh hóa đơn hoàn tất trong tháng ',p_month,'/',p_year,'.'); END IF;
+ IF v_total_discount>v_total_net*0.25 THEN SET v_label='Mức độ trợ giá CAO (>25% doanh thu thực)';
+ ELSEIF v_total_discount>0 THEN SET v_label='Mức độ trợ giá HỢP LÝ (<=25% doanh thu thực)';
+ ELSE SET v_label='Không tốn ngân sách trợ giá'; END IF;
+ RETURN CONCAT('CN ',p_branch,' (',p_month,'/',p_year,'): Đơn có Voucher = ',v_with,', Đơn thường = ',v_without,
+  ' | Doanh thu thực = ',CAST(v_total_net AS DECIMAL(19,0)),'đ | Trợ giá = ',CAST(v_total_discount AS DECIMAL(19,0)),'đ (',v_label,')');
+END$$
+DELIMITER ;

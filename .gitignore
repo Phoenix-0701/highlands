@@ -12,4 +12,10 @@ tools/package-lock.json
 tools/package.json
 tools/scriptdom/
 tmp/
+.local-backups/
+docs/archive/private-backups/
+docs/archive/scratch/
+docs/archive/tools/package.json
+docs/archive/tools/package-lock.json
+docs/archive/tools/scriptdom/
 *.log

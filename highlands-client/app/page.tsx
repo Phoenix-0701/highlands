@@ -173,8 +173,8 @@ export default function Home() {
               {loading
                 ? "Đang kiểm tra kết nối"
                 : connected
-                  ? "SQL Server đã kết nối"
-                  : "Chưa kết nối SQL Server"}
+                  ? "MySQL đã kết nối"
+                  : "Chưa kết nối MySQL"}
             </span>
             <div className="top-avatar">N1</div>
           </div>

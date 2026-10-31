@@ -1,206 +1,143 @@
+SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 USE HighlandsCoffeeDB;
-GO
--- Internal validator shared by the two write procedures. JSON preserves M:N categories and all sizes.
-CREATE OR ALTER PROCEDURE dbo.sp_ValidateSanPham
- @Ma_SP VARCHAR(20), @Ten_SP NVARCHAR(150), @Loai_SP VARCHAR(20),
- @Trang_thai NVARCHAR(50), @Danh_muc NVARCHAR(MAX), @Bang_gia NVARCHAR(MAX),
- @Don_gia DECIMAL(12,2) = NULL
-AS
+DELIMITER $$
+DROP PROCEDURE IF EXISTS sp_ValidateSanPham$$
+CREATE PROCEDURE sp_ValidateSanPham(IN p_id VARCHAR(20),IN p_name VARCHAR(150),IN p_type VARCHAR(20),IN p_status VARCHAR(50),IN p_cats LONGTEXT,IN p_prices LONGTEXT,IN p_price DECIMAL(12,2))
+SQL SECURITY DEFINER
 BEGIN
- SET NOCOUNT ON;
- IF @Ma_SP IS NULL OR @Ma_SP NOT LIKE 'SP[0-9][0-9]%' OR SUBSTRING(@Ma_SP,3,20) LIKE '%[^0-9]%'
-  THROW 51001,N'Mã sản phẩm phải là SP và ít nhất hai chữ số, ví dụ SP11.',1;
- IF @Ten_SP IS NULL OR LEN(TRIM(@Ten_SP)) < 3
-  THROW 51002,N'Tên sản phẩm phải có ít nhất 3 ký tự.',1;
- IF @Loai_SP IS NULL OR @Loai_SP NOT IN ('MON_NUOC','BANH_NGOT')
-  THROW 51003,N'Loại sản phẩm phải là MON_NUOC hoặc BANH_NGOT.',1;
- IF @Trang_thai IS NULL OR @Trang_thai NOT IN (N'Đang bán',N'Hết hàng',N'Ngừng kinh doanh')
-  THROW 51004,N'Trạng thái bán không hợp lệ.',1;
- IF EXISTS(SELECT 1 FROM dbo.SAN_PHAM WHERE Ten_SP=TRIM(@Ten_SP) AND Ma_SP<>@Ma_SP)
-  THROW 51005,N'Tên sản phẩm đã được dùng bởi một sản phẩm khác.',1;
- IF ISJSON(@Danh_muc)<>1 OR LEFT(LTRIM(@Danh_muc),1)<>'[' OR @Danh_muc IS NULL
-  THROW 51006,N'Danh mục phải là một mảng JSON.',1;
- IF NOT EXISTS(SELECT 1 FROM OPENJSON(@Danh_muc))
-  THROW 51007,N'Sản phẩm phải thuộc ít nhất một danh mục.',1;
- IF EXISTS(SELECT 1 FROM OPENJSON(@Danh_muc) j LEFT JOIN dbo.DANH_MUC d ON j.value=d.Ma_danh_muc WHERE d.Ma_danh_muc IS NULL OR j.type<>1)
-  THROW 51008,N'Có mã danh mục không tồn tại.',1;
- IF EXISTS(SELECT value FROM OPENJSON(@Danh_muc) GROUP BY value HAVING COUNT(*)>1)
-  THROW 51009,N'Danh sách danh mục có mã bị lặp.',1;
- IF ISJSON(@Bang_gia)<>1 OR LEFT(LTRIM(@Bang_gia),1)<>'[' OR @Bang_gia IS NULL
-  THROW 51010,N'Bảng giá phải là một mảng JSON.',1;
- IF @Loai_SP='BANH_NGOT'
- BEGIN
-  IF @Don_gia IS NULL OR @Don_gia<5000 THROW 51011,N'Giá bánh phải từ 5.000 đồng.',1;
-  IF EXISTS(SELECT 1 FROM OPENJSON(@Bang_gia)) THROW 51012,N'Bánh ngọt không được có kích thước.',1;
- END
+ IF p_id IS NULL OR NOT REGEXP_LIKE(p_id,'^SP[0-9]{2,18}$','c') THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51001,MESSAGE_TEXT='Mã sản phẩm phải là SP và từ 2 đến 18 chữ số.'; END IF;
+ IF p_name IS NULL OR CHAR_LENGTH(TRIM(p_name))<3 THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51002,MESSAGE_TEXT='Tên sản phẩm phải có ít nhất 3 ký tự.'; END IF;
+ IF p_type IS NULL OR p_type NOT IN('MON_NUOC','BANH_NGOT') THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51003,MESSAGE_TEXT='Loại sản phẩm không hợp lệ.'; END IF;
+ IF p_status IS NULL OR p_status NOT IN('Đang bán','Hết hàng','Ngừng kinh doanh') THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51004,MESSAGE_TEXT='Trạng thái bán không hợp lệ.'; END IF;
+ IF EXISTS(SELECT 1 FROM SAN_PHAM WHERE Ten_SP=TRIM(p_name) AND Ma_SP<>p_id) THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51005,MESSAGE_TEXT='Tên sản phẩm đã được sử dụng.'; END IF;
+ IF p_cats IS NULL OR JSON_VALID(p_cats)=0 THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51006,MESSAGE_TEXT='Danh mục phải là mảng JSON.'; END IF;
+ IF JSON_TYPE(CAST(p_cats AS JSON))<>'ARRAY' OR JSON_LENGTH(p_cats)=0 THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51007,MESSAGE_TEXT='Sản phẩm phải thuộc ít nhất một danh mục.'; END IF;
+ IF EXISTS(SELECT 1 FROM JSON_TABLE(p_cats,'$[*]' COLUMNS(n FOR ORDINALITY,id VARCHAR(20) PATH '$' NULL ON ERROR)) j LEFT JOIN DANH_MUC d ON d.Ma_danh_muc=j.id
+  WHERE d.Ma_danh_muc IS NULL OR JSON_TYPE(JSON_EXTRACT(p_cats,CONCAT('$[',j.n-1,']')))<>'STRING') THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51008,MESSAGE_TEXT='Có mã danh mục không tồn tại.'; END IF;
+ IF EXISTS(SELECT id FROM JSON_TABLE(p_cats,'$[*]' COLUMNS(id VARCHAR(20) PATH '$')) j GROUP BY id HAVING COUNT(*)>1) THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51009,MESSAGE_TEXT='Danh mục bị lặp.'; END IF;
+ IF p_prices IS NULL OR JSON_VALID(p_prices)=0 THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51010,MESSAGE_TEXT='Bảng giá phải là mảng JSON.'; END IF;
+ IF JSON_TYPE(CAST(p_prices AS JSON))<>'ARRAY' THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51010,MESSAGE_TEXT='Bảng giá phải là mảng JSON.'; END IF;
+ IF p_type='BANH_NGOT' THEN
+  IF p_price IS NULL OR p_price<5000 THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51011,MESSAGE_TEXT='Giá bánh phải từ 5.000 đồng.'; END IF;
+  IF JSON_LENGTH(p_prices)>0 THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51012,MESSAGE_TEXT='Bánh ngọt không được có kích thước.'; END IF;
  ELSE
- BEGIN
-  IF @Don_gia IS NOT NULL THROW 51013,N'Món nước sử dụng giá theo kích thước.',1;
-  IF NOT EXISTS(SELECT 1 FROM OPENJSON(@Bang_gia)) THROW 51014,N'Món nước phải có ít nhất một kích thước.',1;
-  IF EXISTS(SELECT 1 FROM OPENJSON(@Bang_gia) WHERE type<>5)
-   THROW 51015,N'Mỗi dòng bảng giá phải chứa Ma_size và Gia_ban.',1;
-  IF EXISTS(SELECT 1 FROM OPENJSON(@Bang_gia) j LEFT JOIN dbo.KICH_THUOC s ON JSON_VALUE(j.value,'$.Ma_size')=s.Ma_size
-    WHERE j.type<>5 OR s.Ma_size IS NULL OR TRY_CONVERT(DECIMAL(12,2),JSON_VALUE(j.value,'$.Gia_ban')) IS NULL
-      OR TRY_CONVERT(DECIMAL(12,2),JSON_VALUE(j.value,'$.Gia_ban'))<5000)
-   THROW 51015,N'Kích thước không tồn tại hoặc giá theo size nhỏ hơn 5.000 đồng.',1;
-  IF EXISTS(SELECT JSON_VALUE(value,'$.Ma_size') FROM OPENJSON(@Bang_gia) GROUP BY JSON_VALUE(value,'$.Ma_size') HAVING COUNT(*)>1)
-   THROW 51016,N'Mỗi kích thước chỉ được khai báo một mức giá.',1;
- END
-END;
-GO
-CREATE OR ALTER PROCEDURE dbo.sp_InsertSanPham
- @Ma_SP VARCHAR(20), @Ten_SP NVARCHAR(150), @Loai_SP VARCHAR(20),
- @Mo_ta NVARCHAR(500)=NULL, @Trang_thai NVARCHAR(50)=N'Đang bán',
- @Danh_muc NVARCHAR(MAX), @Bang_gia NVARCHAR(MAX)=N'[]', @Don_gia DECIMAL(12,2)=NULL
-AS
+  IF p_price IS NOT NULL THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51013,MESSAGE_TEXT='Món nước sử dụng giá theo kích thước.'; END IF;
+  IF JSON_LENGTH(p_prices)=0 THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51014,MESSAGE_TEXT='Món nước cần ít nhất một kích thước.'; END IF;
+  IF EXISTS(SELECT 1 FROM JSON_TABLE(p_prices,'$[*]' COLUMNS(n FOR ORDINALITY,id VARCHAR(10) PATH '$.Ma_size' NULL ON ERROR,price VARCHAR(40) PATH '$.Gia_ban' NULL ON ERROR)) j LEFT JOIN KICH_THUOC s ON s.Ma_size=j.id
+   WHERE s.Ma_size IS NULL OR j.price IS NULL OR NOT REGEXP_LIKE(j.price,'^[0-9]+([.][0-9]{1,2})?$') OR CAST(j.price AS DECIMAL(12,2))<5000
+    OR JSON_TYPE(JSON_EXTRACT(p_prices,CONCAT('$[',j.n-1,']')))<>'OBJECT') THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51015,MESSAGE_TEXT='Kích thước không tồn tại hoặc giá theo size không hợp lệ.'; END IF;
+  IF EXISTS(SELECT id FROM JSON_TABLE(p_prices,'$[*]' COLUMNS(id VARCHAR(10) PATH '$.Ma_size')) j GROUP BY id HAVING COUNT(*)>1) THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51016,MESSAGE_TEXT='Mỗi kích thước chỉ được có một mức giá.'; END IF;
+ END IF;
+END$$
+DROP PROCEDURE IF EXISTS sp_InsertSanPham$$
+CREATE PROCEDURE sp_InsertSanPham(IN p_id VARCHAR(20),IN p_name VARCHAR(150),IN p_type VARCHAR(20),IN p_desc VARCHAR(500),IN p_status VARCHAR(50),IN p_cats LONGTEXT,IN p_prices LONGTEXT,IN p_price DECIMAL(12,2))
+SQL SECURITY DEFINER
 BEGIN
- SET NOCOUNT ON; SET XACT_ABORT ON;
- BEGIN TRY
-  BEGIN TRANSACTION;
-  IF EXISTS(SELECT 1 FROM dbo.SAN_PHAM WITH(UPDLOCK,HOLDLOCK) WHERE Ma_SP=@Ma_SP)
-   THROW 51017,N'Mã sản phẩm đã tồn tại.',1;
-  EXEC dbo.sp_ValidateSanPham @Ma_SP,@Ten_SP,@Loai_SP,@Trang_thai,@Danh_muc,@Bang_gia,@Don_gia;
-  INSERT dbo.SAN_PHAM(Ma_SP,Ten_SP,Loai_SP,Mo_ta,Trang_thai) VALUES(@Ma_SP,TRIM(@Ten_SP),@Loai_SP,@Mo_ta,@Trang_thai);
-  INSERT dbo.SAN_PHAM_THUOC_DANH_MUC SELECT @Ma_SP,value FROM OPENJSON(@Danh_muc);
-  IF @Loai_SP='BANH_NGOT'
-   INSERT dbo.BANH_NGOT(Ma_SP,Don_gia) VALUES(@Ma_SP,@Don_gia);
-  ELSE
-  BEGIN
-   INSERT dbo.MON_NUOC(Ma_SP) VALUES(@Ma_SP);
-   INSERT dbo.CHON_SIZE(Ma_SP,Ma_size,Gia_ban)
-    SELECT @Ma_SP,Ma_size,Gia_ban FROM OPENJSON(@Bang_gia) WITH(Ma_size VARCHAR(10),Gia_ban DECIMAL(12,2));
-  END
-  COMMIT;
- END TRY
- BEGIN CATCH
-  IF XACT_STATE()<>0 ROLLBACK;
-  THROW;
- END CATCH
-END;
-GO
-CREATE OR ALTER PROCEDURE dbo.sp_UpdateSanPham
- @Ma_SP VARCHAR(20), @Ten_SP NVARCHAR(150), @Loai_SP VARCHAR(20),
- @Mo_ta NVARCHAR(500)=NULL, @Trang_thai NVARCHAR(50), @Danh_muc NVARCHAR(MAX),
- @Bang_gia NVARCHAR(MAX)=N'[]', @Don_gia DECIMAL(12,2)=NULL
-AS
+ DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;
+ START TRANSACTION;
+ IF EXISTS(SELECT 1 FROM SAN_PHAM WHERE Ma_SP=p_id) THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51017,MESSAGE_TEXT='Mã sản phẩm đã tồn tại.'; END IF;
+ CALL sp_ValidateSanPham(p_id,p_name,p_type,p_status,p_cats,p_prices,p_price);
+ INSERT INTO SAN_PHAM VALUES(p_id,TRIM(p_name),p_type,p_desc,p_status);
+ INSERT INTO SAN_PHAM_THUOC_DANH_MUC SELECT p_id,id FROM JSON_TABLE(p_cats,'$[*]' COLUMNS(id VARCHAR(20) PATH '$')) j;
+ IF p_type='BANH_NGOT' THEN INSERT INTO BANH_NGOT(Ma_SP,Don_gia) VALUES(p_id,p_price);
+ ELSE
+  INSERT INTO MON_NUOC(Ma_SP) VALUES(p_id);
+  INSERT INTO CHON_SIZE SELECT p_id,id,price FROM JSON_TABLE(p_prices,'$[*]' COLUMNS(id VARCHAR(10) PATH '$.Ma_size',price DECIMAL(12,2) PATH '$.Gia_ban')) j;
+ END IF;
+ COMMIT;
+END$$
+DROP PROCEDURE IF EXISTS sp_UpdateSanPham$$
+CREATE PROCEDURE sp_UpdateSanPham(IN p_id VARCHAR(20),IN p_name VARCHAR(150),IN p_type VARCHAR(20),IN p_desc VARCHAR(500),IN p_status VARCHAR(50),IN p_cats LONGTEXT,IN p_prices LONGTEXT,IN p_price DECIMAL(12,2))
+SQL SECURITY DEFINER
 BEGIN
- SET NOCOUNT ON; SET XACT_ABORT ON;
- BEGIN TRY
-  BEGIN TRANSACTION;
-  DECLARE @Loai_cu VARCHAR(20);
-  SELECT @Loai_cu=Loai_SP FROM dbo.SAN_PHAM WITH(UPDLOCK,HOLDLOCK) WHERE Ma_SP=@Ma_SP;
-  IF @Loai_cu IS NULL THROW 51018,N'Không tìm thấy sản phẩm cần cập nhật.',1;
-  IF @Loai_cu<>@Loai_SP THROW 51019,N'Không được đổi loại sản phẩm. Hãy tạo một mã sản phẩm mới.',1;
-  EXEC dbo.sp_ValidateSanPham @Ma_SP,@Ten_SP,@Loai_SP,@Trang_thai,@Danh_muc,@Bang_gia,@Don_gia;
-  IF EXISTS(SELECT 1 FROM dbo.CHI_TIET_HOA_DON c WHERE c.Ma_SP=@Ma_SP AND c.Ma_size IS NOT NULL
-     AND NOT EXISTS(SELECT 1 FROM OPENJSON(@Bang_gia) WITH(Ma_size VARCHAR(10)) j WHERE j.Ma_size=c.Ma_size))
-   THROW 51020,N'Không thể bỏ kích thước đã được dùng trong hóa đơn. Hãy giữ kích thước và cập nhật giá.',1;
-  UPDATE dbo.SAN_PHAM SET Ten_SP=TRIM(@Ten_SP),Mo_ta=@Mo_ta,Trang_thai=@Trang_thai WHERE Ma_SP=@Ma_SP;
-  DELETE dbo.SAN_PHAM_THUOC_DANH_MUC WHERE Ma_SP=@Ma_SP;
-  INSERT dbo.SAN_PHAM_THUOC_DANH_MUC SELECT @Ma_SP,value FROM OPENJSON(@Danh_muc);
-  IF @Loai_SP='BANH_NGOT' UPDATE dbo.BANH_NGOT SET Don_gia=@Don_gia WHERE Ma_SP=@Ma_SP;
-  ELSE
-  BEGIN
-   DELETE dbo.CHON_SIZE WHERE Ma_SP=@Ma_SP AND Ma_size NOT IN(SELECT Ma_size FROM OPENJSON(@Bang_gia) WITH(Ma_size VARCHAR(10)));
-   UPDATE s SET Gia_ban=j.Gia_ban FROM dbo.CHON_SIZE s JOIN OPENJSON(@Bang_gia) WITH(Ma_size VARCHAR(10),Gia_ban DECIMAL(12,2)) j ON s.Ma_size=j.Ma_size WHERE s.Ma_SP=@Ma_SP;
-   INSERT dbo.CHON_SIZE(Ma_SP,Ma_size,Gia_ban)
-    SELECT @Ma_SP,j.Ma_size,j.Gia_ban FROM OPENJSON(@Bang_gia) WITH(Ma_size VARCHAR(10),Gia_ban DECIMAL(12,2)) j
-    WHERE NOT EXISTS(SELECT 1 FROM dbo.CHON_SIZE WHERE Ma_SP=@Ma_SP AND Ma_size=j.Ma_size);
-  END
-  COMMIT;
- END TRY
- BEGIN CATCH
-  IF XACT_STATE()<>0 ROLLBACK;
-  THROW;
- END CATCH
-END;
-GO
-CREATE OR ALTER PROCEDURE dbo.sp_DeleteSanPham @Ma_SP VARCHAR(20)
-AS
+ DECLARE v_type VARCHAR(20) DEFAULT NULL;
+ DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;
+ START TRANSACTION;
+ SELECT Loai_SP INTO v_type FROM SAN_PHAM WHERE Ma_SP=p_id FOR UPDATE;
+ IF v_type IS NULL THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51018,MESSAGE_TEXT='Không tìm thấy sản phẩm.'; END IF;
+ IF v_type<>p_type THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51019,MESSAGE_TEXT='Không được đổi loại sản phẩm. Hãy tạo mã mới.'; END IF;
+ CALL sp_ValidateSanPham(p_id,p_name,p_type,p_status,p_cats,p_prices,p_price);
+ IF EXISTS(SELECT 1 FROM CHI_TIET_HOA_DON c WHERE c.Ma_SP=p_id AND c.Ma_size IS NOT NULL AND NOT EXISTS(SELECT 1 FROM JSON_TABLE(p_prices,'$[*]' COLUMNS(id VARCHAR(10) PATH '$.Ma_size')) j WHERE j.id=c.Ma_size)) THEN
+  SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51020,MESSAGE_TEXT='Không thể bỏ kích thước đã dùng trong hóa đơn.';
+ END IF;
+ UPDATE SAN_PHAM SET Ten_SP=TRIM(p_name),Mo_ta=p_desc,Trang_thai=p_status WHERE Ma_SP=p_id;
+ DELETE FROM SAN_PHAM_THUOC_DANH_MUC WHERE Ma_SP=p_id;
+ INSERT INTO SAN_PHAM_THUOC_DANH_MUC SELECT p_id,id FROM JSON_TABLE(p_cats,'$[*]' COLUMNS(id VARCHAR(20) PATH '$')) j;
+ IF p_type='BANH_NGOT' THEN UPDATE BANH_NGOT SET Don_gia=p_price WHERE Ma_SP=p_id;
+ ELSE
+  DELETE FROM CHON_SIZE WHERE Ma_SP=p_id AND Ma_size NOT IN(SELECT id FROM JSON_TABLE(p_prices,'$[*]' COLUMNS(id VARCHAR(10) PATH '$.Ma_size')) j);
+  UPDATE CHON_SIZE s JOIN JSON_TABLE(p_prices,'$[*]' COLUMNS(id VARCHAR(10) PATH '$.Ma_size',price DECIMAL(12,2) PATH '$.Gia_ban')) j ON s.Ma_size=j.id SET s.Gia_ban=j.price WHERE s.Ma_SP=p_id;
+  INSERT INTO CHON_SIZE SELECT p_id,id,price FROM JSON_TABLE(p_prices,'$[*]' COLUMNS(id VARCHAR(10) PATH '$.Ma_size',price DECIMAL(12,2) PATH '$.Gia_ban')) j WHERE NOT EXISTS(SELECT 1 FROM CHON_SIZE s WHERE s.Ma_SP=p_id AND s.Ma_size=j.id);
+ END IF;
+ COMMIT;
+END$$
+DROP PROCEDURE IF EXISTS sp_DeleteSanPham$$
+CREATE PROCEDURE sp_DeleteSanPham(IN p_id VARCHAR(20)) SQL SECURITY DEFINER
 BEGIN
- SET NOCOUNT ON; SET XACT_ABORT ON;
- BEGIN TRY
-  BEGIN TRANSACTION;
-  IF NOT EXISTS(SELECT 1 FROM dbo.SAN_PHAM WITH(UPDLOCK,HOLDLOCK) WHERE Ma_SP=@Ma_SP)
-   THROW 51018,N'Không tìm thấy sản phẩm cần xóa.',1;
-  DECLARE @So_don INT=(SELECT COUNT(DISTINCT Ma_HD) FROM dbo.CHI_TIET_HOA_DON WHERE Ma_SP=@Ma_SP);
-  IF @So_don>0
-  BEGIN
-   DECLARE @Loi NVARCHAR(500)=N'Sản phẩm đã xuất hiện trong '+CONVERT(NVARCHAR(20),@So_don)+N' hóa đơn. Hãy chuyển trạng thái sang Ngừng kinh doanh để giữ lịch sử giao dịch.';
-   THROW 51021,@Loi,1;
-  END
-  DELETE dbo.SAN_PHAM WHERE Ma_SP=@Ma_SP;
-  COMMIT;
- END TRY
- BEGIN CATCH
-  IF XACT_STATE()<>0 ROLLBACK;
-  THROW;
- END CATCH
-END;
-GO
--- SELECT-only procedure: one row per product, EXISTS avoids category x size duplication.
-CREATE OR ALTER PROCEDURE dbo.sp_TimKiemSanPham_Menu
- @Tu_khoa NVARCHAR(150)=NULL, @Ma_danh_muc VARCHAR(20)=NULL,
- @Loai_SP VARCHAR(20)=NULL, @Trang_thai NVARCHAR(50)=NULL,
- @Gia_tu DECIMAL(12,2)=NULL, @Gia_den DECIMAL(12,2)=NULL, @Sap_xep_theo VARCHAR(20)='TEN_ASC'
-AS
+ DECLARE v_id VARCHAR(20) DEFAULT NULL;
+ DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;
+ START TRANSACTION;
+ SELECT Ma_SP INTO v_id FROM SAN_PHAM WHERE Ma_SP=p_id FOR UPDATE;
+ IF v_id IS NULL THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51018,MESSAGE_TEXT='Không tìm thấy sản phẩm.'; END IF;
+ IF EXISTS(SELECT 1 FROM CHI_TIET_HOA_DON WHERE Ma_SP=p_id) THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51021,MESSAGE_TEXT='Sản phẩm đã có hóa đơn. Hãy chuyển sang Ngừng kinh doanh để giữ lịch sử.'; END IF;
+ DELETE FROM SAN_PHAM WHERE Ma_SP=p_id;
+ COMMIT;
+END$$
+-- Read-only search. EXISTS prevents category x size duplicates.
+DROP PROCEDURE IF EXISTS sp_TimKiemSanPham_Menu$$
+CREATE PROCEDURE sp_TimKiemSanPham_Menu(IN p_search VARCHAR(150),IN p_cat VARCHAR(20),IN p_type VARCHAR(20),IN p_status VARCHAR(50),IN p_min DECIMAL(12,2),IN p_max DECIMAL(12,2),IN p_sort VARCHAR(20))
+READS SQL DATA SQL SECURITY DEFINER
 BEGIN
- SET NOCOUNT ON;
- SELECT sp.Ma_SP,sp.Ten_SP,sp.Loai_SP,sp.Mo_ta,sp.Trang_thai,
-   Gia_tu=COALESCE(bn.Don_gia,p.Gia_tu),Gia_den=COALESCE(bn.Don_gia,p.Gia_den),bn.Don_gia,
-   Danh_muc=JSON_QUERY((SELECT d.Ma_danh_muc,d.Ten_danh_muc FROM dbo.DANH_MUC d JOIN dbo.SAN_PHAM_THUOC_DANH_MUC m ON d.Ma_danh_muc=m.Ma_danh_muc WHERE m.Ma_SP=sp.Ma_SP ORDER BY d.Ma_danh_muc FOR JSON PATH)),
-   Bang_gia=JSON_QUERY((SELECT s.Ma_size,s.Gia_ban FROM dbo.CHON_SIZE s WHERE s.Ma_SP=sp.Ma_SP ORDER BY s.Gia_ban,s.Ma_size FOR JSON PATH)),
-   So_hoa_don=(SELECT COUNT(DISTINCT Ma_HD) FROM dbo.CHI_TIET_HOA_DON c WHERE c.Ma_SP=sp.Ma_SP)
- FROM dbo.SAN_PHAM sp LEFT JOIN dbo.BANH_NGOT bn ON sp.Ma_SP=bn.Ma_SP
- OUTER APPLY(SELECT MIN(Gia_ban) Gia_tu,MAX(Gia_ban) Gia_den FROM dbo.CHON_SIZE WHERE Ma_SP=sp.Ma_SP) p
- WHERE (@Tu_khoa IS NULL OR sp.Ten_SP LIKE N'%'+@Tu_khoa+N'%' OR sp.Ma_SP LIKE N'%'+@Tu_khoa+N'%')
-   AND (@Ma_danh_muc IS NULL OR EXISTS(SELECT 1 FROM dbo.SAN_PHAM_THUOC_DANH_MUC WHERE Ma_SP=sp.Ma_SP AND Ma_danh_muc=@Ma_danh_muc))
-   AND (@Loai_SP IS NULL OR sp.Loai_SP=@Loai_SP) AND (@Trang_thai IS NULL OR sp.Trang_thai=@Trang_thai)
-   AND ((sp.Loai_SP='BANH_NGOT' AND (@Gia_tu IS NULL OR bn.Don_gia>=@Gia_tu) AND (@Gia_den IS NULL OR bn.Don_gia<=@Gia_den))
-    OR (sp.Loai_SP='MON_NUOC' AND EXISTS(SELECT 1 FROM dbo.CHON_SIZE s WHERE s.Ma_SP=sp.Ma_SP AND (@Gia_tu IS NULL OR s.Gia_ban>=@Gia_tu) AND (@Gia_den IS NULL OR s.Gia_ban<=@Gia_den))))
- ORDER BY CASE WHEN @Sap_xep_theo='GIA_ASC' THEN COALESCE(bn.Don_gia,p.Gia_tu) END,
-   CASE WHEN @Sap_xep_theo='GIA_DESC' THEN COALESCE(bn.Don_gia,p.Gia_tu) END DESC,
-   CASE WHEN @Sap_xep_theo='TEN_ASC' THEN sp.Ten_SP END,sp.Ma_SP;
-END;
-GO
--- SELECT-only aggregate procedure: item sales before invoice discount, explicitly named.
-CREATE OR ALTER PROCEDURE dbo.sp_ThongKeDoanhThuSanPham
- @Tu_ngay DATE, @Den_ngay DATE, @Ma_CN VARCHAR(20)=NULL,
- @So_luong_ban_toi_thieu INT=1, @Doanh_thu_toi_thieu DECIMAL(18,2)=0
-AS
+ SELECT sp.Ma_SP,sp.Ten_SP,sp.Loai_SP,sp.Mo_ta,sp.Trang_thai,bn.Don_gia,COALESCE(bn.Don_gia,p.Gia_tu) Gia_tu,COALESCE(bn.Don_gia,p.Gia_den) Gia_den,
+  COALESCE((SELECT JSON_ARRAYAGG(JSON_OBJECT('Ma_danh_muc',d.Ma_danh_muc,'Ten_danh_muc',d.Ten_danh_muc)) FROM DANH_MUC d JOIN SAN_PHAM_THUOC_DANH_MUC m ON m.Ma_danh_muc=d.Ma_danh_muc WHERE m.Ma_SP=sp.Ma_SP),JSON_ARRAY()) Danh_muc,
+  COALESCE((SELECT JSON_ARRAYAGG(JSON_OBJECT('Ma_size',s.Ma_size,'Gia_ban',s.Gia_ban)) FROM CHON_SIZE s WHERE s.Ma_SP=sp.Ma_SP),JSON_ARRAY()) Bang_gia,
+  (SELECT COUNT(DISTINCT Ma_HD) FROM CHI_TIET_HOA_DON WHERE Ma_SP=sp.Ma_SP) So_hoa_don
+ FROM SAN_PHAM sp LEFT JOIN BANH_NGOT bn ON sp.Ma_SP=bn.Ma_SP
+ LEFT JOIN(SELECT Ma_SP,MIN(Gia_ban) Gia_tu,MAX(Gia_ban) Gia_den FROM CHON_SIZE GROUP BY Ma_SP) p ON p.Ma_SP=sp.Ma_SP
+ WHERE (p_search IS NULL OR sp.Ten_SP LIKE CONCAT('%',p_search,'%') OR sp.Ma_SP LIKE CONCAT('%',p_search,'%'))
+  AND (p_cat IS NULL OR EXISTS(SELECT 1 FROM SAN_PHAM_THUOC_DANH_MUC m WHERE m.Ma_SP=sp.Ma_SP AND m.Ma_danh_muc=p_cat))
+  AND (p_type IS NULL OR sp.Loai_SP=p_type) AND (p_status IS NULL OR sp.Trang_thai=p_status)
+  AND ((sp.Loai_SP='BANH_NGOT' AND (p_min IS NULL OR bn.Don_gia>=p_min) AND (p_max IS NULL OR bn.Don_gia<=p_max))
+   OR (sp.Loai_SP='MON_NUOC' AND EXISTS(SELECT 1 FROM CHON_SIZE s WHERE s.Ma_SP=sp.Ma_SP AND (p_min IS NULL OR s.Gia_ban>=p_min) AND (p_max IS NULL OR s.Gia_ban<=p_max))))
+ ORDER BY CASE WHEN p_sort='GIA_ASC' THEN COALESCE(bn.Don_gia,p.Gia_tu) END,
+  CASE WHEN p_sort='GIA_DESC' THEN COALESCE(bn.Don_gia,p.Gia_tu) END DESC,CASE WHEN p_sort='TEN_ASC' THEN sp.Ten_SP END,sp.Ma_SP;
+END$$
+DROP PROCEDURE IF EXISTS sp_ThongKeDoanhThuSanPham$$
+CREATE PROCEDURE sp_ThongKeDoanhThuSanPham(IN p_from DATE,IN p_to DATE,IN p_branch VARCHAR(20),IN p_qty INT,IN p_revenue DECIMAL(18,2))
+READS SQL DATA SQL SECURITY DEFINER
 BEGIN
- SET NOCOUNT ON;
- SELECT sp.Ma_SP,sp.Ten_SP,sp.Loai_SP,COUNT(DISTINCT hd.Ma_HD) So_don_hang_xuat_hien,
-   SUM(c.So_luong) Tong_so_luong_ban,SUM(c.Thanh_tien) Tong_doanh_thu_mon,
-   CAST(AVG(c.Thanh_tien) AS DECIMAL(18,2)) Doanh_thu_trung_binh_moi_luot
- FROM dbo.SAN_PHAM sp JOIN dbo.CHI_TIET_HOA_DON c ON sp.Ma_SP=c.Ma_SP
- JOIN dbo.HOA_DON hd ON c.Ma_HD=hd.Ma_HD JOIN dbo.CHI_NHANH cn ON hd.Ma_CN=cn.Ma_CN
- WHERE hd.Trang_thai='HOAN_TAT' AND hd.Ngay_tao>=@Tu_ngay AND hd.Ngay_tao<DATEADD(DAY,1,@Den_ngay)
-   AND (@Ma_CN IS NULL OR cn.Ma_CN=@Ma_CN)
+ SELECT sp.Ma_SP,sp.Ten_SP,sp.Loai_SP,COUNT(DISTINCT h.Ma_HD) So_don_hang_xuat_hien,SUM(c.So_luong) Tong_so_luong_ban,SUM(c.Thanh_tien) Tong_doanh_thu_mon,CAST(AVG(c.Thanh_tien) AS DECIMAL(18,2)) Doanh_thu_trung_binh_moi_luot
+ FROM SAN_PHAM sp JOIN CHI_TIET_HOA_DON c ON sp.Ma_SP=c.Ma_SP JOIN HOA_DON h ON h.Ma_HD=c.Ma_HD JOIN CHI_NHANH cn ON cn.Ma_CN=h.Ma_CN
+ WHERE h.Trang_thai='HOAN_TAT' AND h.Ngay_tao>=p_from AND h.Ngay_tao<DATE_ADD(p_to,INTERVAL 1 DAY) AND (p_branch IS NULL OR cn.Ma_CN=p_branch)
  GROUP BY sp.Ma_SP,sp.Ten_SP,sp.Loai_SP
- HAVING SUM(c.So_luong)>=@So_luong_ban_toi_thieu AND SUM(c.Thanh_tien)>=@Doanh_thu_toi_thieu
+ HAVING SUM(c.So_luong)>=p_qty AND SUM(c.Thanh_tien)>=p_revenue
  ORDER BY Tong_doanh_thu_mon DESC,Tong_so_luong_ban DESC,sp.Ma_SP;
-END;
-GO
--- BTL1 1.3.h: trigger creates debit history in the same transaction.
-CREATE OR ALTER PROCEDURE dbo.sp_DoiVoucher @Ma_VCCN VARCHAR(20),@Ma_KH VARCHAR(20),@Ma_Voucher VARCHAR(20),@Ngay_doi DATETIME=NULL
-AS
+END$$
+DROP PROCEDURE IF EXISTS sp_DoiVoucher$$
+CREATE PROCEDURE sp_DoiVoucher(IN p_id VARCHAR(20),IN p_customer VARCHAR(20),IN p_voucher VARCHAR(20),IN p_date DATETIME)
+SQL SECURITY DEFINER
 BEGIN
- SET NOCOUNT ON; SET XACT_ABORT ON;
- BEGIN TRY
-  BEGIN TRANSACTION;
-  SET @Ngay_doi=COALESCE(@Ngay_doi,GETDATE());
-  IF NOT EXISTS(SELECT 1 FROM dbo.KHACH_HANG WITH(UPDLOCK,HOLDLOCK) WHERE Ma_KH=@Ma_KH)
-   THROW 51030,N'Khách hàng không tồn tại.',1;
-  IF NOT EXISTS(SELECT 1 FROM dbo.VOUCHER WHERE Ma_Voucher=@Ma_Voucher)
-   THROW 51031,N'Voucher không tồn tại.',1;
-  INSERT dbo.VOUCHER_CA_NHAN(Ma_VCCN,Ngay_doi,HSD,Trang_thai,Ma_Voucher,Ma_KH)
-   SELECT @Ma_VCCN,@Ngay_doi,DATEADD(DAY,Tgian_hieu_luc,@Ngay_doi),'CHUA_SU_DUNG',Ma_Voucher,@Ma_KH FROM dbo.VOUCHER WHERE Ma_Voucher=@Ma_Voucher;
-  COMMIT;
- END TRY
- BEGIN CATCH
-  IF XACT_STATE()<>0 ROLLBACK;
-  THROW;
- END CATCH
-END;
-GO
+ DECLARE v_points INT DEFAULT NULL;
+ DECLARE v_days INT DEFAULT NULL;
+ DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;
+ START TRANSACTION;
+ SELECT Diem_tich_luy INTO v_points FROM KHACH_HANG WHERE Ma_KH=p_customer FOR UPDATE;
+ IF v_points IS NULL THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51030,MESSAGE_TEXT='Khách hàng không tồn tại.'; END IF;
+ SELECT Tgian_hieu_luc INTO v_days FROM VOUCHER WHERE Ma_Voucher=p_voucher;
+ IF v_days IS NULL THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51031,MESSAGE_TEXT='Voucher không tồn tại.'; END IF;
+ INSERT INTO VOUCHER_CA_NHAN(Ma_VCCN,Ngay_doi,HSD,Trang_thai,Ma_Voucher,Ma_KH) VALUES(p_id,COALESCE(p_date,NOW()),DATE_ADD(COALESCE(p_date,NOW()),INTERVAL v_days DAY),'CHUA_SU_DUNG',p_voucher,p_customer);
+ COMMIT;
+END$$
+DROP PROCEDURE IF EXISTS sp_ChuyenTrangThaiHoaDon$$
+CREATE PROCEDURE sp_ChuyenTrangThaiHoaDon(IN p_id VARCHAR(20),IN p_status VARCHAR(30)) SQL SECURITY DEFINER
+BEGIN
+ DECLARE v_id VARCHAR(20) DEFAULT NULL;
+ DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;
+ START TRANSACTION;
+ SELECT Ma_HD INTO v_id FROM HOA_DON WHERE Ma_HD=p_id FOR UPDATE;
+ IF v_id IS NULL THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51126,MESSAGE_TEXT='Không tìm thấy hóa đơn.'; END IF;
+ IF p_status IS NULL OR p_status NOT IN('DANG_CHUAN_BI','HOAN_TAT','DA_HUY') THEN SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO=51125,MESSAGE_TEXT='Trạng thái đích không hợp lệ.'; END IF;
+ UPDATE HOA_DON SET Trang_thai=p_status WHERE Ma_HD=p_id;
+ COMMIT;
+END$$
+DELIMITER ;

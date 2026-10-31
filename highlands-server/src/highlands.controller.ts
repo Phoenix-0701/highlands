@@ -10,105 +10,90 @@ import {
   Put,
   Query,
 } from '@nestjs/common';
-import * as sql from 'mssql';
 import { DatabaseService } from './database.service';
 import * as v from './validation';
-
+const day = (value: Date) => value.toISOString().slice(0, 10);
 @Controller()
 export class HighlandsController {
   constructor(private readonly db: DatabaseService) {}
-
-  @Get('health')
-  async health() {
-    const p = await this.db.pool();
-    const r = await p
-      .request()
-      .query(
-        "SELECT DB_NAME() databaseName, (SELECT COUNT(*) FROM sys.tables WHERE schema_id=SCHEMA_ID('dbo')) tableCount, CASE WHEN OBJECT_ID('dbo.sp_TimKiemSanPham_Menu','P') IS NULL THEN 0 ELSE 1 END ready",
-      );
-    if (!r.recordset[0].ready)
+  @Get('health') async health() {
+    const [row] = await this.db.query(
+      "SELECT DATABASE() databaseName, VERSION() version, (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE') tableCount, (SELECT COUNT(*) FROM information_schema.routines WHERE routine_schema=DATABASE() AND routine_name='sp_TimKiemSanPham_Menu') ready",
+    );
+    if (!row.ready)
       throw new BadRequestException(
-        'SQL Server đã kết nối nhưng chưa khởi tạo thủ tục. Chạy npm run db:init.',
+        'MySQL đã kết nối nhưng chưa khởi tạo thủ tục. Chạy npm run db:init.',
       );
-    return { connected: true, ...r.recordset[0] };
+    return { connected: true, engine: 'MySQL', ...row };
   }
-
-  @Get('lookups')
-  async lookups() {
-    const p = await this.db.pool();
-    const r = await p
-      .request()
-      .query(
-        "SELECT Ma_danh_muc,Ten_danh_muc FROM dbo.DANH_MUC ORDER BY Ma_danh_muc; SELECT Ma_size,Ten_size FROM dbo.KICH_THUOC ORDER BY CASE Ma_size WHEN 'XS' THEN 1 WHEN 'S' THEN 2 WHEN 'M' THEN 3 WHEN 'L' THEN 4 ELSE 5 END; SELECT Ma_CN,Ten_CN FROM dbo.CHI_NHANH ORDER BY Ma_CN; SELECT Ma_KH,Ho,Ten,Diem_tich_luy,Hang_thanh_vien FROM dbo.KHACH_HANG ORDER BY Ma_KH; SELECT * FROM dbo.VOUCHER ORDER BY Diem_doi;",
-      );
-    const sets = r.recordsets as sql.IRecordSet<unknown>[];
-    return {
-      categories: sets[0],
-      sizes: sets[1],
-      branches: sets[2],
-      customers: sets[3],
-      vouchers: sets[4],
-    };
+  @Get('lookups') async lookups() {
+    const [categories, sizes, branches, customers, vouchers] =
+      await Promise.all([
+        this.db.query(
+          'SELECT Ma_danh_muc,Ten_danh_muc FROM DANH_MUC ORDER BY Ma_danh_muc',
+        ),
+        this.db.query(
+          "SELECT Ma_size,Ten_size FROM KICH_THUOC ORDER BY FIELD(Ma_size,'XS','S','M','L','XL')",
+        ),
+        this.db.query('SELECT Ma_CN,Ten_CN FROM CHI_NHANH ORDER BY Ma_CN'),
+        this.db.query(
+          'SELECT Ma_KH,Ho,Ten,Diem_tich_luy,Hang_thanh_vien FROM KHACH_HANG ORDER BY Ma_KH',
+        ),
+        this.db.query('SELECT * FROM VOUCHER ORDER BY Diem_doi'),
+      ]);
+    return { categories, sizes, branches, customers, vouchers };
   }
-
-  @Get('products')
-  async products(@Query() q: Record<string, unknown>) {
+  @Get('products') async products(@Query() q: Record<string, unknown>) {
     const low = v.number(q.minPrice, 'Giá từ'),
       high = v.number(q.maxPrice, 'Giá đến');
     if (low !== null && high !== null && low > high)
       throw new BadRequestException('Giá từ không được lớn hơn giá đến.');
-    const p = await this.db.pool();
-    const r = await p
-      .request()
-      .input('Tu_khoa', sql.NVarChar(150), v.text(q.search, 'Từ khóa', 150))
-      .input('Ma_danh_muc', sql.VarChar(20), v.text(q.category, 'Danh mục', 20))
-      .input(
-        'Loai_SP',
-        sql.VarChar(20),
-        q.type ? v.choice(q.type, 'Loại', v.TYPES) : null,
-      )
-      .input(
-        'Trang_thai',
-        sql.NVarChar(50),
-        q.status ? v.choice(q.status, 'Trạng thái', v.STATUSES) : null,
-      )
-      .input('Gia_tu', sql.Decimal(12, 2), low)
-      .input('Gia_den', sql.Decimal(12, 2), high)
-      .input(
-        'Sap_xep_theo',
-        sql.VarChar(20),
-        v.choice(
-          q.sort,
-          'Sắp xếp',
-          ['TEN_ASC', 'GIA_ASC', 'GIA_DESC'],
-          'TEN_ASC',
-        ),
-      )
-      .execute('dbo.sp_TimKiemSanPham_Menu');
-    return r.recordset.map((row: Record<string, unknown>) => ({
+    const rows = await this.db.call('sp_TimKiemSanPham_Menu', [
+      v.text(q.search, 'Từ khóa', 150),
+      v.text(q.category, 'Danh mục', 20),
+      q.type ? v.choice(q.type, 'Loại', v.TYPES) : null,
+      q.status ? v.choice(q.status, 'Trạng thái', v.STATUSES) : null,
+      low,
+      high,
+      v.choice(
+        q.sort,
+        'Sắp xếp',
+        ['TEN_ASC', 'GIA_ASC', 'GIA_DESC'],
+        'TEN_ASC',
+      ),
+    ]);
+    const list = (value: unknown): Record<string, unknown>[] =>
+      (typeof value === 'string' ? JSON.parse(value) : (value ?? [])) as Record<
+        string,
+        unknown
+      >[];
+    return rows.map((row) => ({
       ...row,
-      Danh_muc: JSON.parse(String(row.Danh_muc ?? '[]')) as unknown,
-      Bang_gia: JSON.parse(String(row.Bang_gia ?? '[]')) as unknown,
+      Danh_muc: list(row.Danh_muc).sort((a, b) =>
+        String(a.Ma_danh_muc).localeCompare(String(b.Ma_danh_muc)),
+      ),
+      Bang_gia: list(row.Bang_gia).sort(
+        (a, b) =>
+          ['XS', 'S', 'M', 'L', 'XL'].indexOf(String(a.Ma_size)) -
+          ['XS', 'S', 'M', 'L', 'XL'].indexOf(String(b.Ma_size)),
+      ),
     }));
   }
-
   private async save(body: unknown, id?: string) {
-    const data = v.product(body, id);
-    const p = await this.db.pool();
-    await p
-      .request()
-      .input('Ma_SP', sql.VarChar(20), data.Ma_SP)
-      .input('Ten_SP', sql.NVarChar(150), data.Ten_SP)
-      .input('Loai_SP', sql.VarChar(20), data.Loai_SP)
-      .input('Mo_ta', sql.NVarChar(500), data.Mo_ta)
-      .input('Trang_thai', sql.NVarChar(50), data.Trang_thai)
-      .input('Danh_muc', sql.NVarChar(sql.MAX), JSON.stringify(data.Danh_muc))
-      .input('Bang_gia', sql.NVarChar(sql.MAX), JSON.stringify(data.Bang_gia))
-      .input('Don_gia', sql.Decimal(12, 2), data.Don_gia)
-      .execute(id ? 'dbo.sp_UpdateSanPham' : 'dbo.sp_InsertSanPham');
+    const d = v.product(body, id);
+    await this.db.call(id ? 'sp_UpdateSanPham' : 'sp_InsertSanPham', [
+      d.Ma_SP,
+      d.Ten_SP,
+      d.Loai_SP,
+      d.Mo_ta,
+      d.Trang_thai,
+      JSON.stringify(d.Danh_muc),
+      JSON.stringify(d.Bang_gia),
+      d.Don_gia,
+    ]);
     return {
       message: id ? 'Đã cập nhật sản phẩm.' : 'Đã thêm sản phẩm.',
-      Ma_SP: data.Ma_SP,
+      Ma_SP: d.Ma_SP,
     };
   }
   @Post('products') create(@Body() b: unknown) {
@@ -118,131 +103,92 @@ export class HighlandsController {
     return this.save(b, id);
   }
   @Delete('products/:id') async remove(@Param('id') id: string) {
-    const p = await this.db.pool();
-    await p
-      .request()
-      .input('Ma_SP', sql.VarChar(20), v.text(id, 'Mã sản phẩm', 20, true))
-      .execute('dbo.sp_DeleteSanPham');
+    await this.db.call('sp_DeleteSanPham', [
+      v.text(id, 'Mã sản phẩm', 20, true),
+    ]);
     return { message: 'Đã xóa sản phẩm chưa phát sinh giao dịch.' };
   }
-
   @Get('reports/revenue') async revenue(@Query() q: Record<string, unknown>) {
-    const [from, to] = v.range(q.from, q.to);
-    const minQuantity =
-      v.number(q.minQuantity, 'Số lượng tối thiểu', 1, 2147483647) ?? 1;
-    if (!Number.isInteger(minQuantity))
+    const [from, to] = v.range(q.from, q.to),
+      quantity =
+        v.number(q.minQuantity, 'Số lượng tối thiểu', 1, 2147483647) ?? 1;
+    if (!Number.isInteger(quantity))
       throw new BadRequestException('Số lượng tối thiểu phải là số nguyên.');
-    const p = await this.db.pool();
-    const r = await p
-      .request()
-      .input('Tu_ngay', sql.Date, from)
-      .input('Den_ngay', sql.Date, to)
-      .input('Ma_CN', sql.VarChar(20), v.text(q.branch, 'Chi nhánh', 20))
-      .input('So_luong_ban_toi_thieu', sql.Int, minQuantity)
-      .input(
-        'Doanh_thu_toi_thieu',
-        sql.Decimal(18, 2),
-        v.number(q.minRevenue, 'Doanh số tối thiểu', 0) ?? 0,
-      )
-      .execute('dbo.sp_ThongKeDoanhThuSanPham');
-    return r.recordset;
+    return this.db.call('sp_ThongKeDoanhThuSanPham', [
+      day(from),
+      day(to),
+      v.text(q.branch, 'Chi nhánh', 20),
+      quantity,
+      v.number(q.minRevenue, 'Doanh số tối thiểu', 0) ?? 0,
+    ]);
   }
-
   @Get('reports/streak') async streak(@Query() q: Record<string, unknown>) {
     const [from, to] = v.range(q.from, q.to);
-    const p = await this.db.pool();
-    const r = await p
-      .request()
-      .input(
-        'customer',
-        sql.VarChar(20),
+    return (
+      await this.db.query('SELECT fn_TinhDiemThuongChuoiLua(?,?,?) result', [
         v.text(q.customer, 'Khách hàng', 20, true),
-      )
-      .input('from', sql.Date, from)
-      .input('to', sql.Date, to)
-      .query(
-        'SELECT dbo.fn_TinhDiemThuongChuoiLua(@customer,@from,@to) result',
-      );
-    return r.recordset[0] as { result: string };
+        day(from),
+        day(to),
+      ])
+    )[0];
   }
-
   @Get('reports/discount') async discount(@Query() q: Record<string, unknown>) {
     const month = v.number(q.month, 'Tháng', 1, 12, false)!,
       year = v.number(q.year, 'Năm', 2020, 2100, false)!;
     if (!Number.isInteger(month) || !Number.isInteger(year))
       throw new BadRequestException('Tháng và năm phải là số nguyên.');
-    const p = await this.db.pool();
-    const r = await p
-      .request()
-      .input('branch', sql.VarChar(20), v.text(q.branch, 'Chi nhánh', 20, true))
-      .input('month', sql.Int, month)
-      .input('year', sql.Int, year)
-      .query(
-        'SELECT dbo.fn_PhanTichGiaTriUuDaiChiNhanh(@branch,@month,@year) result',
-      );
-    return r.recordset[0] as { result: string };
-  }
-
-  @Get('orders') async orders() {
-    const p = await this.db.pool();
     return (
-      await p
-        .request()
-        .query(
-          "SELECT TOP(200) h.*,k.Ho+N' '+k.Ten Ten_KH,c.Ten_CN FROM dbo.HOA_DON h JOIN dbo.KHACH_HANG k ON h.Ma_KH=k.Ma_KH JOIN dbo.CHI_NHANH c ON h.Ma_CN=c.Ma_CN ORDER BY h.Ngay_tao DESC,h.Ma_HD",
-        )
-    ).recordset;
+      await this.db.query(
+        'SELECT fn_PhanTichGiaTriUuDaiChiNhanh(?,?,?) result',
+        [v.text(q.branch, 'Chi nhánh', 20, true), month, year],
+      )
+    )[0];
+  }
+  @Get('orders') async orders() {
+    return this.db.query(
+      "SELECT h.*,CONCAT(k.Ho,' ',k.Ten) Ten_KH,c.Ten_CN FROM HOA_DON h JOIN KHACH_HANG k ON k.Ma_KH=h.Ma_KH JOIN CHI_NHANH c ON c.Ma_CN=h.Ma_CN ORDER BY h.Ngay_tao DESC,h.Ma_HD LIMIT 200",
+    );
   }
   @Patch('orders/:id/status') async status(
     @Param('id') id: string,
     @Body() b: { status?: unknown },
   ) {
-    const status = v.choice(b?.status, 'Trạng thái', [
-      'DANG_CHUAN_BI',
-      'HOAN_TAT',
-      'DA_HUY',
+    await this.db.call('sp_ChuyenTrangThaiHoaDon', [
+      v.text(id, 'Hóa đơn', 20, true),
+      v.choice(b?.status, 'Trạng thái', [
+        'DANG_CHUAN_BI',
+        'HOAN_TAT',
+        'DA_HUY',
+      ]),
     ]);
-    const p = await this.db.pool();
-    await p
-      .request()
-      .input('Ma_HD', sql.VarChar(20), v.text(id, 'Hóa đơn', 20, true))
-      .input('Trang_thai', sql.VarChar(30), status)
-      .execute('dbo.sp_ChuyenTrangThaiHoaDon');
     return {
       message: 'Đã cập nhật hóa đơn; trigger đã tính tiền, voucher và điểm.',
     };
   }
-
   @Get('loyalty/:id') async loyalty(@Param('id') id: string) {
-    const p = await this.db.pool();
-    const r = await p
-      .request()
-      .input('id', sql.VarChar(20), v.text(id, 'Khách hàng', 20, true))
-      .query(
-        'SELECT c.*,v.Ten_Voucher FROM dbo.VOUCHER_CA_NHAN c JOIN dbo.VOUCHER v ON c.Ma_Voucher=v.Ma_Voucher WHERE c.Ma_KH=@id ORDER BY c.Ngay_doi DESC; SELECT * FROM dbo.LICH_SU_DIEM WHERE Ma_KH=@id ORDER BY Thoi_gian DESC,Ma_LS;',
-      );
-    const sets = r.recordsets as sql.IRecordSet<unknown>[];
-    return { vouchers: sets[0], history: sets[1] };
+    const customer = v.text(id, 'Khách hàng', 20, true);
+    const [vouchers, history] = await Promise.all([
+      this.db.query(
+        'SELECT c.*,v.Ten_Voucher FROM VOUCHER_CA_NHAN c JOIN VOUCHER v ON v.Ma_Voucher=c.Ma_Voucher WHERE c.Ma_KH=? ORDER BY c.Ngay_doi DESC',
+        [customer],
+      ),
+      this.db.query(
+        'SELECT * FROM LICH_SU_DIEM WHERE Ma_KH=? ORDER BY Thoi_gian DESC,Ma_LS',
+        [customer],
+      ),
+    ]);
+    return { vouchers, history };
   }
   @Post('loyalty/redeem') async redeem(
     @Body() b: { customer?: unknown; voucher?: unknown },
   ) {
-    const p = await this.db.pool();
     const id = 'VC' + crypto.randomUUID().replaceAll('-', '').slice(0, 18);
-    await p
-      .request()
-      .input('Ma_VCCN', sql.VarChar(20), id)
-      .input(
-        'Ma_KH',
-        sql.VarChar(20),
-        v.text(b?.customer, 'Khách hàng', 20, true),
-      )
-      .input(
-        'Ma_Voucher',
-        sql.VarChar(20),
-        v.text(b?.voucher, 'Voucher', 20, true),
-      )
-      .execute('dbo.sp_DoiVoucher');
+    await this.db.call('sp_DoiVoucher', [
+      id,
+      v.text(b?.customer, 'Khách hàng', 20, true),
+      v.text(b?.voucher, 'Voucher', 20, true),
+      null,
+    ]);
     return {
       message: 'Đổi voucher thành công. Điểm đã được trừ và ghi vào lịch sử.',
       Ma_VCCN: id,

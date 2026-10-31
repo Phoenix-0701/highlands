@@ -110,7 +110,7 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   if (!response.ok)
     throw new Error(
       data?.message ||
-        "Máy chủ chưa sẵn sàng. Kiểm tra NestJS, SQL Server và cấu hình kết nối.",
+        "Máy chủ chưa sẵn sàng. Kiểm tra NestJS, MySQL và cấu hình kết nối.",
     );
   return data as T;
 }
